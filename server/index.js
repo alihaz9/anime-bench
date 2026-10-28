@@ -232,32 +232,46 @@ app.get(
 
     const media = await anilist.detail(id);
 
+    // every provider is tried, in the order that fits the track: anime4up has the
+    // deep catalog with japanese audio + arabic softsubs, animesuge carries dubs.
+    const order = lang === 'dub' ? ['animesuge'] : ['anime4up', 'animesuge'];
     let payload = null;
-    if (lang === 'ar') {
+    let firstError = null;
+
+    for (const provider of order) {
       try {
-        payload = await anime4up.resolve(media);
-      } catch {
-        payload = null;
+        const attempt =
+          provider === 'anime4up'
+            ? await anime4up.resolve(media)
+            : await animesuge.resolve(media, lang === 'dub');
+
+        // a 291-episode show answered by two posts is a movie shelf, not the run
+        const thin =
+          Number.isFinite(media.episodes) && media.episodes >= 5 && attempt.episodes.length <= 2;
+        if (thin) {
+          payload = payload ?? attempt;
+          continue;
+        }
+
+        payload = attempt;
+        if (payload) break;
+      } catch (error) {
+        firstError = firstError ?? error;
       }
     }
 
     if (!payload) {
-      const dub = lang === 'dub';
       try {
-        payload = await animesuge.resolve(media, dub);
-      } catch (primaryError) {
-        try {
-          const resolved = await sources.resolve(media, dub);
-          payload = {
-            provider: 'consumet',
-            providerId: resolved.providerId,
-            matched: resolved.matched,
-            dub,
-            episodes: resolved.episodes,
-          };
-        } catch {
-          throw primaryError;
-        }
+        const resolved = await sources.resolve(media, lang === 'dub');
+        payload = {
+          provider: 'consumet',
+          providerId: resolved.providerId,
+          matched: resolved.matched,
+          dub: lang === 'dub',
+          episodes: resolved.episodes,
+        };
+      } catch {
+        throw firstError ?? Object.assign(new Error('no source carries this title'), { status: 404 });
       }
     }
 

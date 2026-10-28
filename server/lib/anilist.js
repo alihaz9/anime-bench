@@ -7,6 +7,7 @@ const MEDIA_FIELDS = `
   id
   idMal
   title { romaji english native }
+  synonyms
   description(asHtml: false)
   coverImage { extraLarge large color }
   bannerImage

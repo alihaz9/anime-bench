@@ -86,12 +86,24 @@ function buildQueries(titles, dub) {
   return queries.slice(0, 6);
 }
 
-async function findSeries(media, dub) {
-  const titles = [media.title?.english, media.title?.romaji, media.title?.native].filter(Boolean);
+function mediaTitles(media) {
+  const titles = [
+    media.title?.romaji,
+    media.title?.english,
+    media.title?.native,
+    ...(Array.isArray(media.synonyms) ? media.synonyms : []),
+  ]
+    .map((value) => String(value ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return [...new Set(titles)];
+}
+
+async function findCandidates(media, dub) {
+  const titles = mediaTitles(media);
   if (!titles.length) fail('anime has no usable title', 422);
 
   const queries = buildQueries(titles, dub);
-  let best = null;
+  const scored = new Map();
 
   for (const query of queries) {
     let data;
@@ -104,25 +116,26 @@ async function findSeries(media, dub) {
     for (const post of Array.isArray(data) ? data : []) {
       if (!isSlug(post.slug)) continue;
       const name = typeof post.title?.rendered === 'string' ? post.title.rendered : post.title;
-      let score = Math.max(
-        titleScore(name, titles[0]),
-        titles[1] ? titleScore(name, titles[1]) * 0.95 : 0,
-      );
+      let score = 0;
+      for (const title of titles) score = Math.max(score, titleScore(name, title));
       if (dub && /dub/i.test(`${name} ${post.slug}`)) score += 0.1;
       const movieLike = /movie|film/i.test(`${name} ${post.slug}`);
       if (media.format === 'MOVIE') score += movieLike ? 0.15 : -0.2;
-      if (!best || score > best.score) {
-        best = { slug: post.slug, title: name, score, dub: /dub/i.test(post.slug), movieLike };
+
+      const previous = scored.get(post.slug);
+      if (previous === undefined || score > previous.score) {
+        scored.set(post.slug, { slug: post.slug, title: name, score, movieLike });
       }
     }
 
-    if (best && best.score >= 0.95) break;
+    const top = Math.max(0, ...[...scored.values()].map((entry) => entry.score));
+    if (top >= 0.95) break;
   }
 
-  if (!best || best.score < 0.4) fail('no matching source for this anime', 404);
-  // a TV shelf is the wrong answer for a film: better to say we don't have it
-  if (media.format === 'MOVIE' && !best.movieLike) fail('source has no copy of this movie', 404);
-  return best;
+  return [...scored.values()]
+    .filter((entry) => entry.score >= 0.34)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4);
 }
 
 function parseEpisodeSlug(slug, prefix) {
@@ -133,6 +146,17 @@ function parseEpisodeSlug(slug, prefix) {
   if (!Number.isFinite(number) || number <= 0) return null;
   const suffix = match[2] ?? '';
   const track = /^(d|dub|eng|english)$/i.test(suffix) ? 'dub' : 'sub';
+  return { number, track };
+}
+
+// links lifted from the series' own page belong to that series whatever their
+// prefix looks like — the provider abbreviates series slugs but not episode ones
+function parseLooseEpisodeSlug(slug) {
+  const match = String(slug).match(/-episode-(\d+(?:\.\d+)?)(?:-([a-z]+))?$/i);
+  if (!match) return null;
+  const number = Number(match[1]);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  const track = /^(d|dub|eng|english)$/i.test(match[2] ?? '') ? 'dub' : 'sub';
   return { number, track };
 }
 
@@ -179,15 +203,15 @@ async function searchEpisodeSlugs(series) {
 async function listEpisodes(series, dub) {
   // series slugs sometimes carry a single-letter disambiguator ("one-piece-a")
   const prefix = `${series.slug.replace(/-[a-z]$/i, '')}-`;
-  const candidates = new Set([
-    ...(await seriesPageSlugs(series)),
-    ...(await searchEpisodeSlugs(series)),
-  ]);
+  const pageSlugs = await seriesPageSlugs(series);
+  const pageSet = new Set(pageSlugs);
+  const candidates = new Set([...pageSlugs, ...(await searchEpisodeSlugs(series))]);
 
   const byNumber = new Map();
   for (const slug of candidates) {
-    if (!slug.startsWith(prefix)) continue;
-    const parsed = parseEpisodeSlug(slug, prefix);
+    // the series page is authoritative; the WP episode search is fuzzy, so only
+    // trust its hits when the slug really is prefixed by this series
+    const parsed = pageSet.has(slug) ? parseLooseEpisodeSlug(slug) : parseEpisodeSlug(slug, prefix);
     if (!parsed) continue;
     const slot = byNumber.get(parsed.number) ?? {};
     slot[parsed.track] = slug;
@@ -211,19 +235,32 @@ async function listEpisodes(series, dub) {
 }
 
 export async function resolve(media, dub = false) {
-  const series = await findSeries(media, dub);
-  const episodes = await listEpisodes(series, dub);
-  if (!episodes.length) fail('source has no episodes for this title', 404);
+  const candidates = await findCandidates(media, dub);
+  if (!candidates.length) fail('no matching source for this anime', 404);
+  // a TV shelf is the wrong answer for a film: better to say we don't have it
+  const usable = media.format === 'MOVIE' ? candidates.filter((c) => c.movieLike) : candidates;
+  if (!usable.length) fail('source has no copy of this movie', 404);
 
   const expected = Number.isFinite(media.episodes) && media.episodes > 0 ? media.episodes : null;
-  const filtered = expected ? episodes.filter((ep) => ep.number <= expected) : episodes;
+  let fallback = null;
 
-  return {
-    provider: 'animesuge',
-    matched: series.title,
-    dub: series.dub || episodes.some((ep) => ep.track === 'dub'),
-    episodes: filtered.length ? filtered : episodes,
-  };
+  for (const series of usable) {
+    const episodes = await listEpisodes(series, dub);
+    if (!episodes.length) continue;
+
+    const filtered = expected ? episodes.filter((ep) => ep.number <= expected) : episodes;
+    const payload = {
+      provider: 'animesuge',
+      matched: series.title,
+      dub: /dub/i.test(series.slug) || episodes.some((ep) => ep.track === 'dub'),
+      episodes: filtered.length ? filtered : episodes,
+    };
+    if (!fallback) fallback = payload;
+    if (expected && Math.abs(episodes.length - expected) <= 1) return payload;
+  }
+
+  if (fallback) return fallback;
+  fail('source has no episodes for this title', 404);
 }
 
 const VIDEO_FILE = /\.(mp4|webm|m3u8|mpd)(?:[?#]|$)/i;
@@ -255,9 +292,7 @@ async function playerAlive(url) {
   }
 }
 
-export async function watch(slug) {
-  if (!isSlug(slug)) fail('bad episode id', 400);
-
+async function fetchWatchPage(slug) {
   let html;
   try {
     const res = await fetch(`${BASE}/watch/${slug}/`, {
@@ -275,10 +310,10 @@ export async function watch(slug) {
     if (error.status) throw error;
     fail('source site unreachable', 502);
   }
+  return html;
+}
 
-  const player = playerFromPage(html);
-  if (!player) fail('source exposes no player for this episode', 404);
-
+function payloadFor(player) {
   // most episodes point straight at a video file the browser can play natively
   if (VIDEO_FILE.test(player)) {
     return {
@@ -295,9 +330,6 @@ export async function watch(slug) {
     };
   }
 
-  // the rest sit behind a small player page: frame it only if it still resolves
-  if (!(await playerAlive(player))) fail('the source player for this episode is offline', 404);
-
   return {
     provider: 'animesuge',
     referer: `${BASE}/`,
@@ -310,4 +342,31 @@ export async function watch(slug) {
       },
     ],
   };
+}
+
+export async function watch(slug) {
+  if (!isSlug(slug)) fail('bad episode id', 400);
+
+  let lastError = null;
+
+  // the provider's player pages drop requests under load — one retry clears
+  // almost every false "offline" without costing a user-visible failure
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const html = await fetchWatchPage(slug);
+      const player = playerFromPage(html);
+      if (!player) fail('source exposes no player for this episode', 404);
+
+      if (VIDEO_FILE.test(player)) return payloadFor(player);
+      if (await playerAlive(player)) return payloadFor(player);
+
+      lastError = Object.assign(new Error('the source player for this episode is offline'), { status: 404 });
+    } catch (error) {
+      lastError = error;
+      if (error.status && error.status !== 404) throw error;
+    }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+
+  throw lastError ?? Object.assign(new Error('the source player for this episode is offline'), { status: 404 });
 }

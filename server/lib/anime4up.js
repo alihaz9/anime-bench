@@ -107,13 +107,13 @@ function buildQueries(titles) {
     const clean = String(value ?? '').replace(/\s+/g, ' ').trim();
     if (clean.length >= 2 && !queries.includes(clean)) queries.push(clean);
   };
-  for (const title of titles.slice(0, 3)) {
+  for (const title of titles.slice(0, 4)) {
     push(title);
     push(title.split(':')[0]);
     push(title.split(/[:–-]/)[0]);
     push(title.split(':')[0].replace(/\b(season|part|cour)\s*\d+\b/gi, ''));
   }
-  return queries.slice(0, 7);
+  return queries.slice(0, 10);
 }
 
 const CARD_SLUG = /href="https?:\/\/[^"]*\/anime\/([a-z0-9][a-z0-9-]*)\/"/g;
@@ -131,11 +131,23 @@ function slugsFromSearch(html) {
   return slugs;
 }
 
-export async function findSeries(media) {
-  const titles = [media.title?.romaji, media.title?.english, media.title?.native].filter(Boolean);
+export function mediaTitles(media) {
+  const titles = [
+    media.title?.romaji,
+    media.title?.english,
+    media.title?.native,
+    ...(Array.isArray(media.synonyms) ? media.synonyms : []),
+  ]
+    .map((value) => String(value ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return [...new Set(titles)];
+}
+
+export async function findCandidates(media) {
+  const titles = mediaTitles(media);
   if (!titles.length) fail('anime has no usable title', 422);
 
-  let best = null;
+  const scored = new Map();
   for (const query of buildQueries(titles)) {
     let html;
     try {
@@ -146,17 +158,30 @@ export async function findSeries(media) {
     for (const slug of slugsFromSearch(html)) {
       let score = 0;
       for (const title of titles) score = Math.max(score, seriesScore(slug, title, media.format));
-      if (!best || score > best.score) best = { slug, score };
+      const previous = scored.get(slug);
+      if (previous === undefined || score > previous) scored.set(slug, score);
     }
-    if (best && best.score >= 0.92) break;
+    const top = Math.max(0, ...scored.values());
+    if (top >= 0.92) break;
   }
 
-  if (!best || best.score < 0.4) fail('no matching source for this anime', 404);
+  return [...scored.entries()]
+    .filter(([, score]) => score >= 0.34)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([slug, score]) => ({ slug, score }));
+}
+
+export async function findSeries(media) {
+  const [best] = await findCandidates(media);
+  if (!best) fail('no matching source for this anime', 404);
   return { slug: best.slug, score: Number(best.score.toFixed(2)) };
 }
 
 const EPISODE_ANCHOR = /<a\b[^>]*href="((?:https?:\/\/[^"]*)?\/episode\/[^"]+)"[^>]*>([\s\S]{0,400}?)<\/a>/g;
 const ARABIC_NUMBER = /الحلق(?:ة|ه)[-\s]*(\d+(?:\.\d+)?)/;
+// some posts carry an obfuscated suffix instead of a number ("...-الحلقة-s4sns")
+const ARABIC_MARK = /الحلق(?:ة|ه)/;
 const stripTags = (value) =>
   String(value ?? '')
     .replace(/<[^>]*>/g, ' ')
@@ -235,39 +260,58 @@ export function validEpisodeId(slug) {
   if (value.length < 4 || value.length > 400) return false;
   if (/[\u0000-\u001f/\\?#]/.test(value)) return false;
   if (value.startsWith('.')) return false;
-  return ARABIC_NUMBER.test(value) || /episode[- ]?\d+/i.test(value);
+  return ARABIC_MARK.test(value) || /episode[- ]?\d+/i.test(value) || ARABIC_NUMBER.test(value);
 }
 
 export async function resolve(media) {
-  const series = await findSeries(media);
-  const found = await seriesEpisodes(series.slug);
-  if (!found.size) fail('source has no episodes for this title', 404);
+  const candidates = await findCandidates(media);
+  if (!candidates.length) fail('no matching source for this anime', 404);
 
   const expected = Number.isFinite(media.episodes) && media.episodes > 0 ? media.episodes : null;
-  const episodes = [...found.entries()]
-    .map(([number, slug]) => ({
-      id: `a4:${encodeId(slug)}`,
-      number,
-      title: '',
-      track: 'sub',
-      audio: 'ja',
-      subs: 'ar',
+  let fallback = null;
+
+  // the top hit can be an empty shell (a season page with no posts) — walk the
+  // ranked candidates until one actually carries episode links
+  for (const candidate of candidates) {
+    const found = await seriesEpisodes(candidate.slug);
+    if (!found.size) continue;
+
+    const episodes = [...found.entries()]
+      .map(([number, slug]) => ({
+        id: `a4:${encodeId(slug)}`,
+        number,
+        title: '',
+        track: 'sub',
+        audio: 'ja',
+        subs: 'ar',
+        provider: 'anime4up',
+      }))
+      .sort((a, b) => a.number - b.number);
+
+    const filtered = expected ? episodes.filter((ep) => ep.number <= expected) : episodes;
+
+    // a TV entry answered by a single movie post is the wrong shelf: keep it as
+    // a last resort and let the next candidate try
+    if (expected && expected >= 2 && episodes.length <= 1 && candidates.length > 1) {
+      continue;
+    }
+
+    const payload = {
       provider: 'anime4up',
-    }))
-    .filter((ep) => (expected ? ep.number <= expected : true))
-    .sort((a, b) => a.number - b.number);
+      providerId: candidate.slug,
+      matched: candidate.slug,
+      score: Number(candidate.score.toFixed(2)),
+      audio: 'ja',
+      subtitles: 'ar',
+      episodes: filtered.length ? filtered : episodes,
+    };
+    if (!fallback) fallback = payload;
+    // a candidate whose count matches the anilist total is the right season
+    if (expected && Math.abs(episodes.length - expected) <= 1) return payload;
+  }
 
-  if (!episodes.length) fail('source has no episodes for this title', 404);
-
-  return {
-    provider: 'anime4up',
-    providerId: series.slug,
-    matched: series.slug,
-    score: series.score,
-    audio: 'ja',
-    subtitles: 'ar',
-    episodes,
-  };
+  if (fallback) return fallback;
+  fail('source has no episodes for this title', 404);
 }
 
 // ---- watch -----------------------------------------------------------------
