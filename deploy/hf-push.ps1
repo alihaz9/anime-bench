@@ -27,11 +27,12 @@ if (-not (Test-Path (Join-Path $root 'server\index.js'))) { throw "run from the 
 if (Test-Path $Staging) { Remove-Item $Staging -Recurse -Force }
 New-Item -ItemType Directory -Path $Staging | Out-Null
 
-$files = @('Dockerfile', 'package.json', 'package-lock.json', '.dockerignore')
+$files = @('package.json', 'package-lock.json', '.dockerignore')
 foreach ($f in $files) {
   $src = Join-Path $root $f
   if (Test-Path $src) { Copy-Item $src -Destination $Staging } else { Write-Warning "missing $f -- build may fall back to npm install" }
 }
+Copy-Item (Join-Path $root 'deploy\Dockerfile') -Destination (Join-Path $Staging 'Dockerfile')
 foreach ($d in @('server', 'web')) {
   Copy-Item (Join-Path $root $d) -Destination $Staging -Recurse
 }
@@ -39,7 +40,7 @@ Copy-Item (Join-Path $PSScriptRoot 'huggingface\README.md') -Destination (Join-P
 
 # space config: the space sits behind the hf edge proxy, so trust one hop.
 # (root Dockerfile stays untouched for local/render use; this patch only lands in the space)
-$dockerfile = Get-Content (Join-Path $root 'Dockerfile') -Raw
+$dockerfile = Get-Content (Join-Path $root 'deploy\Dockerfile') -Raw
 if ($dockerfile -notmatch 'TRUST_PROXY') {
   $dockerfile = $dockerfile -replace '(?m)^(FROM\s+\S+)', "`$1`n`nENV TRUST_PROXY=1 CACHE_MAX=600"
 }

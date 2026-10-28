@@ -1,0 +1,8 @@
+# vercel runs the express app as a function (api/index.js).
+# the docker/self-host kit must not be read as a vercel service.
+Dockerfile
+.dockerignore
+render.yaml
+deploy
+.github
+DEPLOY.md

@@ -4,6 +4,7 @@ services:
   - type: web
     name: anime-bench
     runtime: docker
+    dockerfilePath: ./deploy/Dockerfile
     plan: free
     region: frankfurt
     healthCheckPath: /api/health
