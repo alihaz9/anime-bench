@@ -57,8 +57,32 @@ Github cron drifts 5–15 min and pauses after 60 days of repo inactivity, while
 15 min — so put **uptimerobot.com** (free, 5 min, no card) on the same `/api/health` url too.
 That pair is what actually holds 24/7.
 
-## 4. lock it down
+## 4. anime4up from a datacenter host
 
+anime4up answers **403** to vercel/render IPs — a cloudflare rule, not a code bug.
+`/api/health/upstreams` shows it per host. animesuge still answers, so the site works
+without this; the deep catalog comes back when a worker fetches a4 for it.
+
+```powershell
+npm i -g wrangler
+wrangler login                                  # free plan, no card
+cd "C:\Users\khadr\OneDrive\Documents\Default Project\deploy\a4-proxy"
+wrangler deploy
+# copy the printed https://a4-proxy.<subdomain>.workers.dev
+
+cd ..\..
+npx vercel env add ANIME4UP_PROXY production    # paste the worker url
+npx vercel deploy --prod --yes --name anime-bench
+```
+
+The worker only forwards GETs to the five a4 hosts, nothing else. Free plan is
+100k requests/day. Verify: `/api/health/upstreams` should show `anime4up:plain` 200,
+and `/api/episodes/20` (Naruto) should come back with `provider: anime4up`, 220 eps.
+
+Without the worker the server notices the 403 once and puts a4 at the back of the
+queue for 10 minutes, so no request pays that timeout twice.
+
+## 5. lock it down
 `ACCESS_CODE` on the host makes `/` a key prompt and `/api/*` a 401 without it; the key sets
 `ab_key` for 30 days. Share once with `?code=YOURCODE`, the cookie carries the rest. Rotate by
 changing the var and redeploying.

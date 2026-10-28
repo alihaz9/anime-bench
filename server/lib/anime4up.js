@@ -10,6 +10,13 @@ const MAX_PAGES = 30;
 const PAGE_CONCURRENCY = 4;
 const MAX_SERVER_TRIES = 4;
 
+// when the site runs on a datacenter host, anime4up answers 403 through a
+// cloudflare rule. deploy/a4-proxy (a worker) fetches it from cloudflare's own
+// network instead — set ANIME4UP_PROXY to that worker url.
+const PROXY = String(process.env.ANIME4UP_PROXY || '').replace(/\/+$/, '');
+const proxied = (url) =>
+  PROXY && /^https?:\/\//i.test(url) ? `${PROXY}/?url=${encodeURIComponent(url)}` : url;
+
 const isSeriesSlug = (value) => /^[a-z0-9][a-z0-9-]{1,199}$/.test(String(value ?? ''));
 
 function fail(message, status) {
@@ -21,7 +28,7 @@ function fail(message, status) {
 async function fetchText(url, { referer = `${BASE}/`, accept = 'text/html,application/xhtml+xml' } = {}) {
   let res;
   try {
-    res = await fetch(url, {
+    res = await fetch(proxied(url), {
       headers: {
         'user-agent': USER_AGENT,
         accept,

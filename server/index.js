@@ -20,6 +20,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 // outside the house (tunnel/port-forward), so strangers can't use your scraper
 const ACCESS_CODE = String(process.env.ACCESS_CODE || '').trim();
 
+// set when anime4up answers 403 from this host — see the episodes route
+let a4BlockedUntil = 0;
+
 function lanAddresses() {
   const found = [];
   for (const entries of Object.values(os.networkInterfaces())) {
@@ -136,6 +139,67 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, uptime: Math.round(process.uptime()) });
 });
 
+// which upstreams answer from this host — the first thing to look at when a
+// title resolves locally and 404s from the deployed copy
+app.get('/api/health/upstreams', limit('health-deep', 20, 60_000), wrap(async (_req, res) => {
+  const UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  const profiles = {
+    plain: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml', 'accept-language': 'ar,en;q=0.8' },
+    browser: {
+      'user-agent': UA,
+      accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'accept-language': 'ar,en-US;q=0.9,en;q=0.8',
+      'accept-encoding': 'gzip, deflate, br',
+      'cache-control': 'no-cache',
+      pragma: 'no-cache',
+      'sec-ch-ua': '"Chromium";v="126", "Not:A-Brand";v="24"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-fetch-dest': 'document',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-site': 'none',
+      'sec-fetch-user': '?1',
+      'upgrade-insecure-requests': '1',
+      referer: 'https://www.google.com/',
+    },
+  };
+  const targets = {
+    animesuge: `${(process.env.ANIMESUGE_BASE || 'https://animesuge.lol').replace(/\/+$/, '')}/`,
+    anime4up: `${(process.env.ANIME4UP_BASE || 'https://w1.anime4up.rest').replace(/\/+$/, '')}/`,
+    'anime4up:wpjson': `${(process.env.ANIME4UP_BASE || 'https://w1.anime4up.rest').replace(/\/+$/, '')}/wp-json/wp/v2/anime?search=naruto&per_page=1`,
+    hianime: 'https://hianime.to/',
+    gogoanime: 'https://www1.gogoanime.bid/',
+    animepahe: 'https://animepahe.ru/',
+  };
+  const results = {};
+  await Promise.all(
+    Object.entries(targets).flatMap(([name, url]) =>
+      Object.entries(profiles).map(async ([profile, headers]) => {
+        const started = Date.now();
+        try {
+          const upstream = await fetch(url, {
+            headers,
+            redirect: 'follow',
+            signal: AbortSignal.timeout(12_000),
+          });
+          const body = await upstream.text();
+          results[`${name}:${profile}`] = {
+            status: upstream.status,
+            ms: Date.now() - started,
+            bytes: body.length,
+            server: upstream.headers.get('server') || '',
+            challenge: /just a moment|cf-chl|cf_chl|attention required/i.test(body),
+          };
+        } catch (error) {
+          results[`${name}:${profile}`] = { status: 0, ms: Date.now() - started, error: String(error?.name || error) };
+        }
+      }),
+    ),
+  );
+  res.json({ host: _req.get('host'), region: process.env.VERCEL_REGION || null, upstreams: results });
+}));
+
 // where this server can be reached from other devices
 const isPrivateHost = (host) =>
   host === 'localhost' ||
@@ -234,7 +298,10 @@ app.get(
 
     // every provider is tried, in the order that fits the track: anime4up has the
     // deep catalog with japanese audio + arabic softsubs, animesuge carries dubs.
-    const order = lang === 'dub' ? ['animesuge'] : ['anime4up', 'animesuge'];
+    // a4 is skipped to the back for a while once it answers 403 from this host
+    const a4Down = Date.now() < a4BlockedUntil;
+    const order =
+      lang === 'dub' || a4Down ? ['animesuge', 'anime4up'] : ['anime4up', 'animesuge'];
     let payload = null;
     let firstError = null;
 
@@ -257,6 +324,9 @@ app.get(
         if (payload) break;
       } catch (error) {
         firstError = firstError ?? error;
+        if (provider === 'anime4up' && /403/.test(String(error?.message || ''))) {
+          a4BlockedUntil = Date.now() + 10 * 60_000;
+        }
       }
     }
 
