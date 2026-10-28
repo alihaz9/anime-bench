@@ -827,7 +827,11 @@ function attach(video, shell, source, restore, autoplay) {
   video.style.display = '';
   installSubtitles(video);
 
-  const url = source.proxy || source.url;
+  // play straight from the cdn; only fall back to our own proxy when the
+  // browser is refused. keeps a free host's bandwidth near zero.
+  let url = source.url;
+  const fallbackUrl = source.proxy && source.proxy !== source.url ? source.proxy : '';
+  let viaProxy = false;
   const isHls = source.isM3U8;
 
   const reveal = () => {
@@ -835,6 +839,14 @@ function attach(video, shell, source, restore, autoplay) {
   };
 
   video.onerror = () => {
+    // direct cdn refused us (cors/referer/token): retry once through the proxy
+    if (!viaProxy && fallbackUrl) {
+      viaProxy = true;
+      url = fallbackUrl;
+      video.src = url;
+      video.play().catch(() => {});
+      return;
+    }
     shell.hidden = false;
     shell.innerHTML = `<strong>stream dropped</strong><span>the source refused or the segment failed.</span>
       <button class="btn ghost" id="retry-source" type="button">retry</button>`;
@@ -869,6 +881,13 @@ function attach(video, shell, source, restore, autoplay) {
     hls.on(window.Hls.Events.ERROR, (_event, details) => {
       if (!details.fatal) return;
       if (details.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+        // one shot at the proxy before we treat the stream as dead
+        if (!viaProxy && fallbackUrl) {
+          viaProxy = true;
+          url = fallbackUrl;
+          hls.loadSource(fallbackUrl);
+          return;
+        }
         hls.startLoad();
       } else if (details.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
         hls.recoverMediaError();
@@ -1216,8 +1235,8 @@ async function viewShare() {
   const tailCard = hosted
     ? `<section class="share-card">
         <h3>keep it online for free</h3>
-        <p class="share-hint">this build is stateless, so it drops onto a free host: render (sleeps when idle), hugging face spaces, or an oracle always-free vm. the repo already has a <code>Dockerfile</code> and <code>render.yaml</code> — see <code>DEPLOY.md</code>.</p>
-        <p class="share-hint">bandwidth is the real limit: ~0.5–1 GB per 1080p episode, so a 100 GB/month tier is roughly 100–200 episodes.</p>
+        <p class="share-hint">video plays straight from the cdn, so this host only serves json, posters and subtitles — a few hundred MB a month, not hundreds of GB. the repo ships a <code>Dockerfile</code> and <code>render.yaml</code>: render free, no card, 750 h/month.</p>
+        <p class="share-hint">free instances sleep after 15 min idle (first click ~40 s). ping <code>/api/health</code> every 5 min with a free uptime monitor and it never sleeps — see <code>DEPLOY.md</code>.</p>
         <p class="share-hint">set <code>ACCESS_CODE</code> in the host's environment so strangers can't use your scrapers.</p>
       </section>`
     : `<section class="share-card">

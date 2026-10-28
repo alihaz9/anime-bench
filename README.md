@@ -26,6 +26,12 @@ No Docker, no external API keys. Playback resolves against `ANIMESUGE_BASE`
 3. If the provider's player is down for that episode the route answers `404` and
    the player shows `mirror offline`. Nothing to fix locally — the mirror is dead.
 
+anime4up sources carry two urls: `url` (the cdn, played **directly** by the
+browser — the cdn sends `access-control-allow-origin: *` and ignores referer) and
+`proxy` (`/api/stream`, used only if the browser is refused). that keeps video
+bytes off this server, which is what makes a free host viable. subtitles and
+posters still go through the proxy because anime4up 403s foreign referers there.
+
 ## routes
 
 | route | shape |

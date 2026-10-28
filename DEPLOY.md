@@ -1,65 +1,76 @@
-# run anime bench without your pc (free)
+# run anime bench without your pc (free, no card)
 
-your pc is doing two jobs: scraping anime4up/anilist, and proxying the video
-(it sends `referer` headers the cdns demand, so phones can play). "works while
-my pc is off" means moving those two jobs onto a machine that never sleeps.
-nothing here needs a database — the whole app is stateless, so it drops onto a
-free host as-is.
+your pc does two jobs: scraping anime4up/anilist, and proxying video. the second
+one is gone — video now plays **straight from the cdn** (it sends
+`access-control-allow-origin: *` and doesn't check referer), so the server only
+ships json, posters and subtitle text. that changes the math completely:
 
-## the real constraint is bandwidth, not cpu
+| traffic | before (proxied video) | now (direct video) |
+|---|---|---|
+| one 1080p episode | 0.6–1 GB **through the host** | ~0 MB (a ~2 KB manifest) |
+| a month of casual use | 20–100 GB | **~0.1–1 GB** (json + posters) |
 
-every episode is streamed *through* the server:
-
-| quality | size per ~24 min episode |
-|---|---|
-| 360p | ~150–250 MB |
-| 720p | ~350–500 MB |
-| 1080p | ~600–1000 MB |
-
-so a 100 GB/month allowance ≈ **100–200 episodes**. that's plenty for a few
-people, not enough for a public site. if you want "me + friends", any option
-below works; if you want "the whole internet", it will hit a paywall fast.
+so bandwidth is no longer the limit. the only thing to solve is keeping a free
+instance awake.
 
 ---
 
-## option 1 — render.com (easiest, 10 minutes)
+## option 1 — render.com (recommended, no card)
 
-free web service, https subdomain, no card needed. sleeps after ~15 min idle and
-takes 30–60 s to wake, which is fine for a personal site.
+free web service, https subdomain, no credit card. **750 running hours/month**,
+512 MB ram, 5 GB egress (plenty now). free services sleep after **15 min idle**
+and wake in ~30–60 s on the next request.
 
-1. push this folder to a **private** github repo (commands at the bottom).
-2. render dashboard → **New → Blueprint** → pick the repo. it reads `render.yaml`
-   and creates the service with the right env vars.
-3. add `ACCESS_CODE` in the dashboard (Environment) if you don't want strangers
-   using your key — the URL becomes `https://<name>.onrender.com/?k=<code>` once
-   per device.
-4. open the URL, then `#/share` still shows the LAN address for home use.
+two ways to live with that:
 
-cost: $0. limits: 512 MB ram, ~100 GB egress/mo, sleeps when idle.
+- **sleep-tolerant** (zero setup): first click of the day takes ~40 s, then it's
+  fast. the page shows skeletons, so it looks slow, not broken.
+- **always awake** (what you asked for): a free uptime pinger hits
+  `https://<your-site>.onrender.com/api/health` every 5 minutes. 5 min < 15 min,
+  so it never sleeps. 744 h ≈ the 750 h allowance, so it fits one service
+  exactly — and there's no headroom, so don't run a second free service on the
+  same account.
 
-## option 2 — hugging face spaces (no card, more ram)
+   pingers that need no card: **cron-job.org** (1 min interval) or
+   **uptimerobot.com** (5 min interval, 50 monitors free).
 
-free docker space, 16 GB ram, sleeps only after ~48 h idle, and needs no billing
-info at all. it is public by default and their terms apply — your call.
+### deploy
 
-1. create a **Docker** space.
-2. push this folder to the space's git remote.
-3. in the space's `README.md` metadata set:
-   ```yaml
-   app_port: 7860
-   ```
-4. add a repository secret/env `PORT=7860` and `ACCESS_CODE=<something>`
-   (dockerfile already honours both).
+```powershell
+# once, in this folder
+git remote add origin https://github.com/<you>/anime-bench.git   # create an EMPTY private repo first
+git branch -M main
+git push -u origin main
+```
 
-## option 3 — oracle cloud always free (a real server, best value)
+then:
 
-the genuinely free-forever vps: 4 arm cores / 24 GB ram (or a small amd box),
-10 TB egress per month, never sleeps. needs a card for identity verification
-(not charged) and ~30 min of setup.
+1. render dashboard → **New → Blueprint** → connect github → pick the repo.
+   it reads `render.yaml`: docker, free plan, healthcheck `/api/health`,
+   `TRUST_PROXY=1` so rate limits key the visitor's ip.
+2. **Environment** → add `ACCESS_CODE` = something only you know. the url becomes
+   `https://<name>.onrender.com/?k=<code>` once per device.
+3. set the pinger to `https://<name>.onrender.com/api/health` if you want 24/7.
+4. open `#/share` — it detects it's hosted and shows the public link + qr.
 
-1. create an **Always Free** VM (ubuntu 22.04, arm ampere).
-2. open ingress for 80/443 in the security list (not 8787 — caddy handles tls).
+### after deploying, check
+
+```bash
+curl -s https://your-site/api/health            # {"ok":true,...}
+curl -s https://your-site/api/a4/home | head -c 120
+```
+
+---
+
+## option 2 — oracle cloud always free (a real server, never sleeps)
+
+genuinely free forever, but **a card is required for identity verification**
+(not charged). 2 arm cores / 12 GB, 10 TB egress.
+
+1. create an **Always Free** VM (ubuntu 22.04, arm).
+2. open ingress for 80/443 (not 8787 — caddy terminates tls).
 3. on the box:
+
    ```bash
    sudo apt update && sudo apt install -y git caddy
    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
@@ -71,30 +82,32 @@ the genuinely free-forever vps: 4 arm cores / 24 GB ram (or a small amd box),
    sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # edit the domain first
    sudo systemctl reload caddy
    ```
-4. point a domain's A record at the VM's public ip (or use `sslip.io`, e.g.
-   `anime.80-12-34-56.sslip.io` — no domain, still gets https).
 
-cost: $0 forever. this is the only option with no bandwidth worry.
+4. point a domain at the vm (or use `sslip.io`: `anime.80-12-34-56.sslip.io` —
+   no domain purchase, still gets https).
 
-## option 4 — keep it at home, just not on your pc
-
-a raspberry pi, an old laptop, or the router itself: same command
-(`npm start`), always on, no monthly cost. you still need tailscale/cloudflared
-to reach it from outside — see `#/share` in the app.
+this is the only option with no hours cap and no cold starts.
 
 ---
 
-## make it deployable (once)
+## option 3 — a spare box at home
 
-```powershell
-git init
-git add .
-git commit -m "anime bench"
-# create an empty PRIVATE repo on github, then:
-git remote add origin https://github.com/<you>/anime-bench.git
-git branch -M main
-git push -u origin main
-```
+a raspberry pi or an old laptop running `npm start`, always on, €0. reach it
+from outside with **tailscale** (private) or a **cloudflared tunnel** (public
+url, no account). see `#/share` in the app.
+
+---
+
+## free tiers that used to work (2026)
+
+- **hugging face spaces** — docker/gradio spaces now need a paid plan (PRO).
+  only static spaces are free, and this app needs a server.
+- **koyeb** — free hobby plan closed; a card + $29 hold is required.
+- **fly.io** — free allowances retired in 2024.
+- **heroku / glitch / cyclic** — gone.
+- **railway** — trial only, $1 credit/month after.
+
+---
 
 ## env vars the server understands
 
@@ -107,16 +120,12 @@ git push -u origin main
 | `CACHE_MAX` | `3000` | entries kept in ram; lower it on a 512 MB host |
 | `CACHE_*_MS` | 5–30 min | ttl for sources/detail/episodes/trending |
 
-## after deploying, check
-
-```bash
-curl -s https://your-site/api/health     # {"ok":true,...}
-curl -s https://your-site/api/a4/home | head -c 120
-```
+---
 
 ## two gotchas
 
-- **cold starts** on render mean the first click of the day takes ~40 s. the
-  page shows skeletons, so it looks slow but isn't broken.
+- **cold starts**: without a pinger the first click after 15 min idle takes ~40 s.
 - **free tiers can vanish.** the repo is self-contained (docker + one process),
-  so moving to another host is a `git push` away.
+  so moving host is a `git push` away.
+- **content complaints**: a public copy of a pirate mirror on shared infra can be
+  reported and taken down. keep it private (`ACCESS_CODE`) and small.

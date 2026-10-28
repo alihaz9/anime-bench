@@ -344,9 +344,12 @@ async function playerFor(server) {
   return parsePlayer(html);
 }
 
-// master playlist -> real quality rungs (1080p/720p/…), each proxied.
+// master playlist -> real quality rungs (1080p/720p/…). each rung is handed to
+// the browser as a direct CDN url (the cdn sends `access-control-allow-origin: *`
+// and does not check referer), with the server proxy kept as a fallback so a
+// free host never pays for video bytes.
 async function variantsOf(streamUrl) {
-  const fallback = [{ quality: 'auto', url: proxyLink(streamUrl), isM3U8: true }];
+  const fallback = [{ quality: 'auto', url: streamUrl, proxy: proxyLink(streamUrl), isM3U8: true }];
   let text;
   try {
     const res = await fetch(streamUrl, {
@@ -379,14 +382,15 @@ async function variantsOf(streamUrl) {
       quality: height ? `${height}p` : bandwidth ? `${Math.round(bandwidth / 1000)}k` : 'auto',
       height,
       bandwidth,
-      url: proxyLink(uri),
+      url: uri,
+      proxy: proxyLink(uri),
       isM3U8: true,
     });
   }
 
   if (!rungs.length) return fallback;
   rungs.sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
-  return rungs.map(({ quality, url, isM3U8 }) => ({ quality, url, isM3U8 }));
+  return rungs.map(({ quality, url, proxy, isM3U8 }) => ({ quality, url, proxy, isM3U8 }));
 }
 
 const firstSeriesSlug = (html) => html.match(/\/anime\/([a-z0-9][a-z0-9-]{1,199})\//)?.[1] || '';
