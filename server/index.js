@@ -391,24 +391,30 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message });
 });
 
-const server = app.listen(PORT, HOST, () => {
-  console.log(`anime-bench listening on http://localhost:${PORT}`);
+// on vercel the runtime imports this module and calls it as a handler —
+// no listen, no signal traps; the platform owns the socket.
+if (!process.env.VERCEL) {
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`anime-bench listening on http://localhost:${PORT}`);
 
-  const lan = lanAddresses();
-  if (lan.length && HOST === '0.0.0.0') {
-    console.log('same wifi / other devices:');
-    for (const ip of lan) console.log(`  http://${ip}:${PORT}`);
-  }
-  if (ACCESS_CODE) {
-    console.log(`access code is on — links need ?k=<code> once per device`);
-  }
-});
+    const lan = lanAddresses();
+    if (lan.length && HOST === '0.0.0.0') {
+      console.log('same wifi / other devices:');
+      for (const ip of lan) console.log(`  http://${ip}:${PORT}`);
+    }
+    if (ACCESS_CODE) {
+      console.log(`access code is on — links need ?k=<code> once per device`);
+    }
+  });
 
-function shutdown(signal) {
-  console.log(`\n[anime-bench] ${signal} — closing`);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 5000).unref();
+  function shutdown(signal) {
+    console.log(`\n[anime-bench] ${signal} — closing`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 5000).unref();
+  }
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+export default app;
