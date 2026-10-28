@@ -26,6 +26,9 @@ const state = {
   hls: null,
   lastSave: 0,
   toastTimer: null,
+  // bumped on every route change; async views carry it so a slow reply from
+  // the page you just left can't paint over the page you asked for
+  viewSeq: 0,
 };
 
 const esc = (value) =>
@@ -183,9 +186,11 @@ function toast(message) {
   state.toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2600);
 }
 
-function render(html) {
+function render(html, seq) {
+  if (seq !== undefined && seq !== state.viewSeq) return false;
   view.innerHTML = html;
   document.title = 'anime bench — watch free';
+  return true;
 }
 
 function skeletonGrid(count = 12) {
@@ -233,9 +238,11 @@ function arabicCard(item, href) {
 
 // ---------------- home ----------------
 async function viewHome() {
+  const seq = state.viewSeq;
   render(`<div class="skeleton hero"></div>${skeletonGrid(12)}`);
 
   const [main, arabic] = await Promise.allSettled([api('/api/home'), api('/api/a4/home')]);
+  if (seq !== state.viewSeq) return;
 
   if (main.status !== 'fulfilled') {
     const a4 = arabic.status === 'fulfilled' ? arabic.value : null;
@@ -245,19 +252,25 @@ async function viewHome() {
     // anime4up shelf we already have and keep the failed one as a notice.
     if (a4?.latest?.length) {
       document.title = 'anime bench — watch free';
-      render(`
+      render(
+        `
         <div class="notice">the anilist shelves are busy (${esc(reason)}) — showing anime4up instead.
           <button class="btn ghost" data-retry="home" type="button">retry</button></div>
         ${rail(
           'أحدث الحلقات · anime4up',
           a4.latest.slice(0, 18).map((item) => arabicCard(item, `#/a4e/${item.id.slice(3)}`)),
           'japanese audio · arabic subs',
-        )}`);
+        )}`,
+        seq,
+      );
       return;
     }
 
-    render(`<div class="empty"><h2>the shelf is empty</h2><p>${esc(reason)}</p>
-      <button class="btn primary" data-retry="home">try again</button></div>`);
+    render(
+      `<div class="empty"><h2>the shelf is empty</h2><p>${esc(reason)}</p>
+      <button class="btn primary" data-retry="home">try again</button></div>`,
+      seq,
+    );
     return;
   }
 
@@ -304,7 +317,8 @@ async function viewHome() {
       ),
     );
 
-  render(`
+  render(
+    `
     ${heroHtml}
     ${
       a4?.latest?.length
@@ -318,11 +332,14 @@ async function viewHome() {
     ${resume.length ? rail('continue watching', resume, 'picked up where you left off') : ''}
     ${rail('trending now', data.trending.map((m) => card(m)), 'this week')}
     ${rail('popular this season', data.season.map((m) => card(m)), prettySeason(data.season[0]?.season, data.season[0]?.seasonYear))}
-  `);
+  `,
+    seq,
+  );
 }
 
 // ---------------- search ----------------
 async function viewSearch(term) {
+  const seq = state.viewSeq;
   qInput.value = term;
   render(`<div class="band-head"><h2>search: ${esc(term)}</h2></div>${skeletonGrid(12)}`);
 
@@ -330,12 +347,14 @@ async function viewSearch(term) {
     api(`/api/search?q=${encodeURIComponent(term)}`),
     api(`/api/a4/search?q=${encodeURIComponent(term)}`),
   ]);
+  if (seq !== state.viewSeq) return;
 
   if (main.status !== 'fulfilled' && arabic.status !== 'fulfilled') {
-    render(`<div class="empty"><h2>search failed</h2><p>${esc(
-      main.reason?.message || 'request failed',
-    )}</p>
-      <button class="btn primary" data-retry="search">try again</button></div>`);
+    render(
+      `<div class="empty"><h2>search failed</h2><p>${esc(main.reason?.message || 'request failed')}</p>
+      <button class="btn primary" data-retry="search">try again</button></div>`,
+      seq,
+    );
     return;
   }
 
@@ -343,34 +362,46 @@ async function viewSearch(term) {
   const a4 = arabic.status === 'fulfilled' ? arabic.value.results || [] : [];
 
   if (!results.length && !a4.length) {
-    render(`<div class="empty"><h2>nothing on the shelf</h2><p>no match for "${esc(term)}".</p>
-      <a class="btn ghost" href="#/">back to trending</a></div>`);
+    render(
+      `<div class="empty"><h2>nothing on the shelf</h2><p>no match for "${esc(term)}".</p>
+      <a class="btn ghost" href="#/">back to trending</a></div>`,
+      seq,
+    );
     return;
   }
 
   document.title = `${term} — anime bench`;
-  render(`<div class="band-head"><h2>${results.length + a4.length} results</h2><span class="sub">"${esc(term)}"</span></div>
+  render(
+    `<div class="band-head"><h2>${results.length + a4.length} results</h2><span class="sub">"${esc(term)}"</span></div>
     ${
       a4.length
         ? `<div class="band-head"><h2>عربي · anime4up</h2><span class="sub">japanese audio · arabic subs</span></div>
           <div class="grid">${a4.map((item) => arabicCard(item, `#/a4/${item.slug}`)).join('')}</div>`
         : ''
     }
-    ${results.length ? `<div class="grid">${results.map((m) => card(m)).join('')}</div>` : ''}`);
+    ${results.length ? `<div class="grid">${results.map((m) => card(m)).join('')}</div>` : ''}`,
+    seq,
+  );
 }
 
 // ---------------- detail ----------------
 async function viewAnime(id) {
+  const seq = state.viewSeq;
   render(`<div class="skeleton hero"></div><div class="skeleton" style="height:320px"></div>`);
 
   let media;
   try {
     media = await api(`/api/anime/${id}`);
   } catch (err) {
-    render(`<div class="empty"><h2>can't open this one</h2><p>${esc(err.message)}</p>
-      <a class="btn ghost" href="#/">back</a></div>`);
+    if (seq !== state.viewSeq) return;
+    render(
+      `<div class="empty"><h2>can't open this one</h2><p>${esc(err.message)}</p>
+      <a class="btn ghost" href="#/">back</a></div>`,
+      seq,
+    );
     return;
   }
+  if (seq !== state.viewSeq) return;
 
   document.title = `${titleOf(media)} — anime bench`;
   state.media = media;
@@ -415,7 +446,9 @@ async function viewAnime(id) {
         </section>
       </div>
     </article>
-  `);
+  `,
+    seq,
+  );
 
   loadEpisodeGrid(media, DEFAULT_LANG);
 }
@@ -487,6 +520,7 @@ async function loadEpisodeGrid(media, lang) {
 
 // ---------------- watch ----------------
 async function viewWatch(animeId, epNumber, lang, options = {}) {
+  const seq = state.viewSeq;
   const a4slug = options.a4slug || '';
   render(`<div class="skeleton hero"></div>`);
 
@@ -513,10 +547,16 @@ async function viewWatch(animeId, epNumber, lang, options = {}) {
       ]);
     }
   } catch (err) {
-    render(`<div class="empty"><h2>player can't open</h2><p>${esc(err.message)}</p>
-      <a class="btn ghost" href="${a4slug ? `#/a4/${encodeURIComponent(a4slug)}` : `#/anime/${animeId}`}">back to details</a></div>`);
+    if (seq !== state.viewSeq) return;
+    render(
+      `<div class="empty"><h2>player can't open</h2><p>${esc(err.message)}</p>
+      <a class="btn ghost" href="${a4slug ? `#/a4/${encodeURIComponent(a4slug)}` : `#/anime/${animeId}`}">back to details</a></div>`,
+      seq,
+    );
     return;
   }
+
+  if (seq !== state.viewSeq) return;
 
   state.media = media;
   state.a4slug = a4slug;
@@ -531,7 +571,10 @@ async function viewWatch(animeId, epNumber, lang, options = {}) {
 
   const ep = data.episodes.find((entry) => entry.number === Number(epNumber)) || data.episodes[0];
   if (!ep) {
-    render(`<div class="empty"><h2>no episodes</h2><p>this source returned an empty run.</p></div>`);
+    render(
+      `<div class="empty"><h2>no episodes</h2><p>this source returned an empty run.</p></div>`,
+      seq,
+    );
     return;
   }
 
@@ -573,7 +616,12 @@ async function viewWatch(animeId, epNumber, lang, options = {}) {
         </div>
       </aside>
     </div>
-  `);
+  `,
+    seq,
+  );
+
+  // a newer route already painted; don't attach a player to someone else's page
+  if (seq !== state.viewSeq) return;
 
   await loadEpisode(ep, { restore: true });
 }
@@ -979,16 +1027,22 @@ function stepEpisode(delta) {
 
 // ---------------- arabic (anime4up) ----------------
 async function viewArabicList(page = 1) {
+  const seq = state.viewSeq;
   render(`<div class="band-head"><h2>كل الأنمي · anime4up</h2></div>${skeletonGrid(12)}`);
 
   let data;
   try {
     data = await api(`/api/a4/browse?page=${page}`);
   } catch (err) {
-    render(`<div class="empty"><h2>can't load the catalog</h2><p>${esc(err.message)}</p>
-      <a class="btn ghost" href="#/">back home</a></div>`);
+    if (seq !== state.viewSeq) return;
+    render(
+      `<div class="empty"><h2>can't load the catalog</h2><p>${esc(err.message)}</p>
+      <a class="btn ghost" href="#/">back home</a></div>`,
+      seq,
+    );
     return;
   }
+  if (seq !== state.viewSeq) return;
 
   document.title = 'all anime — anime bench';
 
@@ -999,20 +1053,28 @@ async function viewArabicList(page = 1) {
     <div class="band-head"><h2>كل الأنمي</h2><span class="sub">page ${data.page} / ${data.pages} · japanese audio · arabic subs</span></div>
     <div class="grid">${data.results.map((item) => arabicCard(item, `#/a4/${item.slug}`)).join('')}</div>
     <div class="pager">${prev}<span class="sub">${data.page} / ${data.pages}</span>${next}</div>
-  `);
+  `,
+    seq,
+  );
 }
 
 async function viewArabicSeries(slug) {
+  const seq = state.viewSeq;
   render(`<div class="skeleton hero"></div><div class="skeleton" style="height:320px"></div>`);
 
   let s;
   try {
     s = await api(`/api/a4/series/${encodeURIComponent(slug)}`);
   } catch (err) {
-    render(`<div class="empty"><h2>can't open this one</h2><p>${esc(err.message)}</p>
-      <a class="btn ghost" href="#/">back</a></div>`);
+    if (seq !== state.viewSeq) return;
+    render(
+      `<div class="empty"><h2>can't open this one</h2><p>${esc(err.message)}</p>
+      <a class="btn ghost" href="#/">back</a></div>`,
+      seq,
+    );
     return;
   }
+  if (seq !== state.viewSeq) return;
 
   const media = {
     id: `a4:${slug}`,
@@ -1063,21 +1125,29 @@ async function viewArabicSeries(slug) {
         </section>
       </div>
     </article>
-  `);
+  `,
+    seq,
+  );
 }
 
 // home/search cards only know the episode token; resolve it to a series page
 async function viewArabicEpisode(token) {
+  const seq = state.viewSeq;
   render(`<div class="skeleton hero"></div>`);
 
   let payload;
   try {
     payload = await api(`/api/watch/a4:${encodeURIComponent(token)}`);
   } catch (err) {
-    render(`<div class="empty"><h2>can't open this episode</h2><p>${esc(err.message)}</p>
-      <a class="btn ghost" href="#/">back home</a></div>`);
+    if (seq !== state.viewSeq) return;
+    render(
+      `<div class="empty"><h2>can't open this episode</h2><p>${esc(err.message)}</p>
+      <a class="btn ghost" href="#/">back home</a></div>`,
+      seq,
+    );
     return;
   }
+  if (seq !== state.viewSeq) return;
 
   const slug = payload.meta?.seriesSlug || '';
   const number = Number(payload.meta?.number) || 1;
@@ -1087,13 +1157,17 @@ async function viewArabicEpisode(token) {
     return;
   }
 
-  render(`<div class="empty"><h2>${esc(payload.meta?.title || 'episode')}</h2>
+  render(
+    `<div class="empty"><h2>${esc(payload.meta?.title || 'episode')}</h2>
     <p>this episode has no series page on the source.</p>
-    <a class="btn ghost" href="#/">back home</a></div>`);
+    <a class="btn ghost" href="#/">back home</a></div>`,
+    seq,
+  );
 }
 
 // ---------------- share (phone / other pc) ----------------
 async function viewShare() {
+  const seq = state.viewSeq;
   document.title = 'watch on your phone — anime bench';
 
   let net = null;
@@ -1102,10 +1176,13 @@ async function viewShare() {
   } catch {
     net = null;
   }
+  if (seq !== state.viewSeq) return;
 
-  const urls = net?.urls?.length ? net.urls : [];
+  const hosted = Boolean(net?.hosted);
+  const urls = net?.urls?.length ? net.urls : net?.origin ? [net.origin] : [];
   const suffix = net?.needsCode ? '?k=YOUR-CODE' : '';
   const qr = net?.qr || '';
+  const port = esc(String(net?.port || 8787));
 
   const rows = urls.length
     ? urls
@@ -1117,43 +1194,68 @@ async function viewShare() {
           </div>`,
         )
         .join('')
-    : `<div class="notice">no wifi address found — is this pc on a network? the link below still works on this machine only.</div>`;
+    : `<div class="notice">no address found — open this page over the network, not from a saved file.</div>`;
+
+  const steps = hosted
+    ? `<li>this copy runs on the internet — <strong>your pc can stay off</strong></li>
+       <li>open the address below on any phone or pc</li>
+       <li>scan the code with the phone camera</li>`
+    : `<li>keep this pc awake with <code>npm start</code> running</li>
+       <li>on the phone, connect to the <strong>same wifi</strong> as this pc</li>
+       <li>open one of these addresses in the phone browser</li>`;
+
+  const firewallCard = hosted
+    ? ''
+    : `<section class="share-card">
+        <h3>it doesn't load on the phone?</h3>
+        <p class="share-hint">windows firewall is the usual culprit. allow node once, in an admin powershell:</p>
+        <pre class="share-code">New-NetFirewallRule -DisplayName "anime bench" -Direction Inbound -LocalPort ${port} -Protocol TCP -Action Allow -Profile Private</pre>
+        <p class="share-hint">also make sure the network is marked <strong>private</strong> in windows (settings → network → properties).</p>
+      </section>`;
+
+  const tailCard = hosted
+    ? `<section class="share-card">
+        <h3>keep it online for free</h3>
+        <p class="share-hint">this build is stateless, so it drops onto a free host: render (sleeps when idle), hugging face spaces, or an oracle always-free vm. the repo already has a <code>Dockerfile</code> and <code>render.yaml</code> — see <code>DEPLOY.md</code>.</p>
+        <p class="share-hint">bandwidth is the real limit: ~0.5–1 GB per 1080p episode, so a 100 GB/month tier is roughly 100–200 episodes.</p>
+        <p class="share-hint">set <code>ACCESS_CODE</code> in the host's environment so strangers can't use your scrapers.</p>
+      </section>`
+    : `<section class="share-card">
+        <h3>outside the house</h3>
+        <p class="share-hint">a home ip isn't reachable from the internet by itself, so pick one:</p>
+        <ul class="share-steps">
+          <li><strong>tailscale</strong> (recommended) — free, private, no port forwarding. install it on this pc and the phone, then open <code>http://<em>this-pc-name</em>:${port}</code> from anywhere.</li>
+          <li><strong>cloudflared tunnel</strong> — public link, no account: <code>cloudflared tunnel --url http://localhost:${port}</code></li>
+          <li><strong>free host</strong> — put it on render/hugging face/oracle and your pc can be off entirely (see <code>DEPLOY.md</code>).</li>
+        </ul>
+        <p class="share-hint">before you expose it, restart with a code so strangers can't use your scrapers:</p>
+        <pre class="share-code">$env:ACCESS_CODE="pick-something"; npm start</pre>
+        <p class="share-hint">then share the link with <code>?k=pick-something</code> — every device only types it once.</p>
+      </section>`;
 
   render(`
-    <div class="band-head"><h2>watch on your phone or another pc</h2><span class="sub">same wifi, no app needed</span></div>
+    <div class="band-head"><h2>watch on your phone or another pc</h2><span class="sub">${
+      hosted ? 'runs without your pc' : 'same wifi, no app needed'
+    }</span></div>
 
     <section class="share-card">
-      <ol class="share-steps">
-        <li>keep this pc awake with <code>npm start</code> running</li>
-        <li>on the phone, connect to the <strong>same wifi</strong> as this pc</li>
-        <li>open one of these addresses in the phone browser</li>
-      </ol>
+      <ol class="share-steps">${steps}</ol>
 
       ${rows}
       ${qr ? `<div class="share-qr">${qr}<span>scan with the phone camera</span></div>` : ''}
 
-      <p class="share-hint">bookmark it on the phone — the address stays the same as long as your router doesn't hand this pc a new ip.</p>
+      <p class="share-hint">${
+        hosted
+          ? 'bookmark it — the address is permanent and needs nothing from this pc.'
+          : "bookmark it on the phone — the address stays the same as long as your router doesn't hand this pc a new ip."
+      }</p>
     </section>
 
-    <section class="share-card">
-      <h3>it doesn't load on the phone?</h3>
-      <p class="share-hint">windows firewall is the usual culprit. allow node once, in an admin powershell:</p>
-      <pre class="share-code">New-NetFirewallRule -DisplayName "anime bench" -Direction Inbound -LocalPort ${esc(String(net?.port || 8787))} -Protocol TCP -Action Allow -Profile Private</pre>
-      <p class="share-hint">also make sure the network is marked <strong>private</strong> in windows (settings → network → properties).</p>
-    </section>
-
-    <section class="share-card">
-      <h3>outside the house</h3>
-      <p class="share-hint">a home ip isn't reachable from the internet by itself, so pick one:</p>
-      <ul class="share-steps">
-        <li><strong>tailscale</strong> (recommended) — free, private, no port forwarding. install it on this pc and the phone, then open <code>http://<em>this-pc-name</em>:${esc(String(net?.port || 8787))}</code> from anywhere.</li>
-        <li><strong>cloudflared tunnel</strong> — public link, no account: <code>cloudflared tunnel --url http://localhost:${esc(String(net?.port || 8787))}</code></li>
-      </ul>
-      <p class="share-hint">before you expose it, restart with a code so strangers can't use your scrapers:</p>
-      <pre class="share-code">$env:ACCESS_CODE="pick-something"; npm start</pre>
-      <p class="share-hint">then share the link with <code>?k=pick-something</code> — every device only types it once.</p>
-    </section>
-  `);
+    ${firewallCard}
+    ${tailCard}
+  `,
+    seq,
+  );
 }
 // ---------------- list ----------------
 function viewList() {
@@ -1205,6 +1307,8 @@ function parseRoute() {
 }
 
 async function route() {
+  state.viewSeq += 1;
+
   if (state.hls) {
     state.hls.destroy();
     state.hls = null;
@@ -1364,9 +1468,15 @@ window.addEventListener('keydown', (event) => {
 window.addEventListener('hashchange', () => {
   view.scrollTop = 0;
   window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+  // route() bumps viewSeq; capture the value it will take so a later click can
+  // suppress this route's error message too
+  const seq = state.viewSeq + 1;
   route().catch((err) => {
-    render(`<div class="empty"><h2>route broke</h2><p>${esc(err.message)}</p>
-      <a class="btn ghost" href="#/">go home</a></div>`);
+    render(
+      `<div class="empty"><h2>route broke</h2><p>${esc(err.message)}</p>
+      <a class="btn ghost" href="#/">go home</a></div>`,
+      seq,
+    );
   });
 });
 

@@ -137,21 +137,36 @@ app.get('/api/health', (_req, res) => {
 });
 
 // where this server can be reached from other devices
+const isPrivateHost = (host) =>
+  host === 'localhost' ||
+  host === '127.0.0.1' ||
+  host === '::1' ||
+  /^10\./.test(host) ||
+  /^192\.168\./.test(host) ||
+  /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+  host.endsWith('.local');
+
 app.get(
   '/api/net',
   limit('net', 60, 60_000),
-  wrap(async (_req, res) => {
-    const urls = lanAddresses().map((ip) => `http://${ip}:${PORT}`);
+  wrap(async (req, res) => {
+    const origin = `${req.protocol}://${req.get('host')}`;
+    // only local installs get lan addresses — on render/cloudflare those
+    // interfaces are container-internal and useless to a phone
+    const urls = isPrivateHost(String(req.hostname || ''))
+      ? lanAddresses().map((ip) => `http://${ip}:${PORT}`)
+      : [];
+    const target = urls[0] || origin;
+
     let qr = '';
-    if (urls.length) {
-      try {
-        const QRCode = (await import('qrcode')).default;
-        qr = await QRCode.toString(urls[0], { type: 'svg', margin: 1, width: 220, errorCorrectionLevel: 'M' });
-      } catch {
-        qr = '';
-      }
+    try {
+      const QRCode = (await import('qrcode')).default;
+      qr = await QRCode.toString(target, { type: 'svg', margin: 1, width: 220, errorCorrectionLevel: 'M' });
+    } catch {
+      qr = '';
     }
-    res.json({ port: PORT, urls, needsCode: Boolean(ACCESS_CODE), qr });
+
+    res.json({ port: PORT, urls, origin, hosted: !urls.length, needsCode: Boolean(ACCESS_CODE), qr });
   }),
 );
 
