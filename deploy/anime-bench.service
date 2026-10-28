@@ -1,0 +1,29 @@
+[Unit]
+Description=anime bench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/anime-bench
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=HOST=127.0.0.1
+Environment=TRUST_PROXY=1
+# optional: uncomment and set a code before exposing this publicly
+# Environment=ACCESS_CODE=change-me
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=3
+User=www-data
+Group=www-data
+
+# small hardening: the app only needs to read its own folder
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/anime-bench
+
+[Install]
+WantedBy=multi-user.target

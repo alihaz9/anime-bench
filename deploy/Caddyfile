@@ -1,0 +1,14 @@
+# caddy gives you automatic https for free (no certbot, no renewals).
+# replace the address with your domain, or use sslip.io with the vm's ip:
+#   anime.80-12-34-56.sslip.io { ... }
+anime.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8787 {
+		# video segments are long-lived streams; don't buffer them to disk
+		flush_interval -1
+	}
+	header {
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Content-Type-Options nosniff
+	}
+}

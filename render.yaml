@@ -1,0 +1,23 @@
+# render.com blueprint — free always-on web service.
+# in the render dashboard: New → Blueprint → point at this repo.
+services:
+  - type: web
+    name: anime-bench
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # render terminates tls for us — trust its x-forwarded-for so the
+      # rate limiter buckets per visitor instead of per proxy
+      - key: TRUST_PROXY
+        value: "1"
+      # 512mb free instance: keep the in-memory cache polite
+      - key: CACHE_MAX
+        value: "600"
+      # set a secret in the dashboard; leave it empty to keep the site open
+      - key: ACCESS_CODE
+        sync: false

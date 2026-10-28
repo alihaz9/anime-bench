@@ -1,0 +1,20 @@
+{
+  "name": "anime-bench",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "check": "node --check server/index.js && node --check server/lib/anilist.js && node --check server/lib/anime4up.js && node --check server/lib/animesuge.js && node --check server/lib/consumet.js && node --check server/lib/proxy.js && node --check server/lib/cache.js && node --check web/app.js"
+  },
+  "dependencies": {
+    "@consumet/extensions": "^1.8.8",
+    "compression": "^1.7.4",
+    "express": "^4.19.2",
+    "qrcode": "^1.5.4"
+  }
+}
